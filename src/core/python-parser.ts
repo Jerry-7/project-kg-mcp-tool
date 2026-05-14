@@ -14,6 +14,16 @@ export interface PythonCallInfo {
   filePath: string;
   enclosingSymbolId?: string;
   calleeName: string;
+  calleePath: string[];
+  expression: string;
+  location: SourceLocation;
+}
+
+export interface PythonAssignmentInfo {
+  filePath: string;
+  enclosingSymbolId?: string;
+  target: string;
+  valueName: string;
   expression: string;
   location: SourceLocation;
 }
@@ -23,6 +33,7 @@ export interface ParsedPythonFile {
   imports: PythonImportInfo[];
   symbols: SymbolNode[];
   calls: PythonCallInfo[];
+  assignments: PythonAssignmentInfo[];
 }
 
 const parser = new Parser();
@@ -34,10 +45,11 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
   const imports: PythonImportInfo[] = [];
   const symbols: SymbolNode[] = [];
   const calls: PythonCallInfo[] = [];
+  const assignments: PythonAssignmentInfo[] = [];
 
   visit(tree.rootNode, [], undefined);
 
-  return { filePath: relativePath, imports, symbols, calls };
+  return { filePath: relativePath, imports, symbols, calls, assignments };
 
   function visit(node: Parser.SyntaxNode, classStack: string[], enclosingSymbolId: string | undefined): void {
     if (node.type === "import_statement" || node.type === "import_from_statement") {
@@ -72,14 +84,23 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
       }
     }
 
+    if (node.type === "assignment") {
+      const parsedAssignment = parseAssignmentNode(node, relativePath, enclosingSymbolId);
+      if (parsedAssignment) {
+        assignments.push(parsedAssignment);
+      }
+    }
+
     if (node.type === "call") {
       const functionNode = node.childForFieldName("function");
-      const calleeName = functionNode ? simplifyCallee(functionNode.text) : undefined;
+      const calleePath = functionNode ? splitDottedName(functionNode.text) : [];
+      const calleeName = calleePath.at(-1);
       if (calleeName) {
         calls.push({
           filePath: relativePath,
           enclosingSymbolId,
           calleeName,
+          calleePath,
           expression: node.text,
           location: toLocation(node)
         });
@@ -90,6 +111,33 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
       visit(child, classStack, enclosingSymbolId);
     }
   }
+}
+
+function parseAssignmentNode(
+  node: Parser.SyntaxNode,
+  filePath: string,
+  enclosingSymbolId: string | undefined
+): PythonAssignmentInfo | undefined {
+  const leftNode = node.childForFieldName("left");
+  const rightNode = node.childForFieldName("right");
+  if (!leftNode || !rightNode || rightNode.type !== "call") {
+    return undefined;
+  }
+
+  const functionNode = rightNode.childForFieldName("function");
+  const valueName = functionNode ? splitDottedName(functionNode.text).at(-1) : undefined;
+  if (!valueName) {
+    return undefined;
+  }
+
+  return {
+    filePath,
+    enclosingSymbolId,
+    target: leftNode.text,
+    valueName,
+    expression: node.text,
+    location: toLocation(node)
+  };
 }
 
 function parseImportNode(
@@ -200,8 +248,12 @@ function childText(node: Parser.SyntaxNode, fieldName: string, source: string): 
   return child ? source.slice(child.startIndex, child.endIndex) : undefined;
 }
 
-function simplifyCallee(text: string): string {
-  return text.trim().split(".").at(-1) ?? text.trim();
+function splitDottedName(text: string): string[] {
+  return text
+    .trim()
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function toLocation(node: Parser.SyntaxNode): SourceLocation {

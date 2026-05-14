@@ -25,6 +25,16 @@ export interface FeatureTraceStep {
 export interface FeatureTrace {
   query: string;
   rootSymbolId?: string;
+  matches?: FeatureTraceMatch[];
   steps: FeatureTraceStep[];
   edges: Array<{ from: string; to: string; label?: string }>;
+}
+
+export interface FeatureTraceMatch {
+  symbolId: string;
+  label: string;
+  kind: string;
+  filePath: string;
+  score: number;
+  reason: string;
 }

@@ -5,6 +5,7 @@ export interface DiagramNode {
   label: string;
   detail?: string;
   kind?: string;
+  group?: string;
 }
 
 export interface DiagramEdge {

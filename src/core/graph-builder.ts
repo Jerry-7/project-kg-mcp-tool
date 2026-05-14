@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { FeatureTrace, FeatureTraceStep } from "../types/call-graph.js";
+import type { FeatureTrace, FeatureTraceMatch, FeatureTraceStep } from "../types/call-graph.js";
 import type { DependencyGraph } from "../types/dependency-graph.js";
 import type { DiagramModel } from "../types/drawio.js";
 import type { ProjectIndex } from "../types/project-index.js";
@@ -26,8 +26,10 @@ export function buildCoreModulesDiagram(store: ProjectKgStore): DiagramModel {
   const coreFileSet = new Set(coreFiles);
   const nodes = coreFiles.map((filePath) => ({
     id: filePath,
-    label: filePath,
-    kind: store.projectIndex.entrypoints.includes(filePath) ? "entrypoint" : "module"
+    label: formatModuleLabel(filePath),
+    detail: filePath,
+    kind: classifyModuleRole(filePath, store.projectIndex.entrypoints),
+    group: classifyModuleRole(filePath, store.projectIndex.entrypoints)
   }));
 
   const edges = store.dependencyGraph.edges
@@ -45,10 +47,51 @@ export function buildCoreModulesDiagram(store: ProjectKgStore): DiagramModel {
   };
 }
 
+function formatModuleLabel(filePath: string): string {
+  const basename = path.posix.basename(filePath, ".py");
+  if (basename === "__init__") {
+    return path.posix.basename(path.posix.dirname(filePath));
+  }
+  return basename;
+}
+
+function classifyModuleRole(filePath: string, entrypoints: string[]): string {
+  if (entrypoints.includes(filePath)) {
+    return "entrypoint";
+  }
+
+  const normalizedPath = `/${filePath.toLowerCase()}`;
+  if (matchesPathRole(normalizedPath, ["api", "apis", "route", "routes", "view", "views", "controller", "controllers", "endpoint", "endpoints"])) {
+    return "interface";
+  }
+  if (matchesPathRole(normalizedPath, ["service", "services", "usecase", "usecases", "application"])) {
+    return "service";
+  }
+  if (matchesPathRole(normalizedPath, ["domain", "core"])) {
+    return "domain";
+  }
+  if (matchesPathRole(normalizedPath, ["repository", "repositories", "dao", "storage", "database", "db"])) {
+    return "repository";
+  }
+  if (matchesPathRole(normalizedPath, ["model", "models", "schema", "schemas", "entity", "entities"])) {
+    return "model";
+  }
+  if (path.posix.basename(filePath) === "__init__.py") {
+    return "package";
+  }
+
+  return "module";
+}
+
+function matchesPathRole(normalizedPath: string, roleHints: string[]): boolean {
+  return roleHints.some((hint) => normalizedPath.includes(`/${hint}/`) || normalizedPath.endsWith(`/${hint}.py`) || normalizedPath.includes(`_${hint}.py`));
+}
+
 export function traceFeature(store: ProjectKgStore, query: string, maxDepth = 4): FeatureTrace {
-  const root = findRootSymbol(store.symbolIndex, query);
+  const matches = findRootSymbolMatches(store.symbolIndex, query);
+  const root = matches[0] ? store.symbolIndex.symbols.find((symbol) => symbol.id === matches[0].symbolId) : undefined;
   if (!root) {
-    return { query, steps: [], edges: [] };
+    return { query, matches, steps: [], edges: [] };
   }
 
   const steps: FeatureTraceStep[] = [];
@@ -82,6 +125,7 @@ export function traceFeature(store: ProjectKgStore, query: string, maxDepth = 4)
   return {
     query,
     rootSymbolId: root.id,
+    matches,
     steps,
     edges
   };
@@ -136,15 +180,79 @@ function scoreCoreFile(filePath: string, entrypoints: string[], incomingCount: n
   return score;
 }
 
-function findRootSymbol(symbolIndex: SymbolIndex, query: string): SymbolNode | undefined {
-  const normalizedQuery = query.toLowerCase();
-  return (
-    symbolIndex.symbols.find((symbol) => symbol.id.toLowerCase() === normalizedQuery) ??
-    symbolIndex.symbols.find((symbol) => symbol.qualifiedName.toLowerCase() === normalizedQuery) ??
-    symbolIndex.symbols.find((symbol) => symbol.name.toLowerCase() === normalizedQuery) ??
-    symbolIndex.symbols.find((symbol) => symbol.filePath.toLowerCase().includes(normalizedQuery)) ??
-    symbolIndex.symbols.find((symbol) => symbol.qualifiedName.toLowerCase().includes(normalizedQuery))
-  );
+function findRootSymbolMatches(symbolIndex: SymbolIndex, query: string): FeatureTraceMatch[] {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  return symbolIndex.symbols
+    .map((symbol) => scoreSymbolMatch(symbol, normalizedQuery))
+    .filter((match): match is FeatureTraceMatch => Boolean(match))
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+    .slice(0, 8);
+}
+
+function scoreSymbolMatch(symbol: SymbolNode, normalizedQuery: string): FeatureTraceMatch | undefined {
+  const candidates = [
+    { value: symbol.id, reason: "symbol id" },
+    { value: symbol.qualifiedName, reason: "qualified name" },
+    { value: symbol.name, reason: "symbol name" },
+    { value: symbol.filePath, reason: "file path" },
+    { value: `${symbol.filePath} ${symbol.qualifiedName}`, reason: "file path and qualified name" }
+  ].map((candidate) => ({
+    normalizedValue: normalizeSearchText(candidate.value),
+    reason: candidate.reason
+  }));
+
+  let best: { score: number; reason: string } | undefined;
+  for (const candidate of candidates) {
+    const score = scoreTextMatch(candidate.normalizedValue, normalizedQuery);
+    if (score > 0 && (!best || score > best.score)) {
+      best = { score, reason: candidate.reason };
+    }
+  }
+
+  if (!best) {
+    return undefined;
+  }
+
+  return {
+    symbolId: symbol.id,
+    label: symbol.qualifiedName,
+    kind: symbol.kind,
+    filePath: symbol.filePath,
+    score: best.score,
+    reason: best.reason
+  };
+}
+
+function scoreTextMatch(value: string, query: string): number {
+  if (value === query) {
+    return 100;
+  }
+  if (value.endsWith(` ${query}`) || value.endsWith(`.${query}`) || value.endsWith(`/${query}`)) {
+    return 90;
+  }
+  if (value.includes(query)) {
+    return 70;
+  }
+
+  const queryTokens = query.split(" ").filter(Boolean);
+  if (queryTokens.length > 1 && queryTokens.every((token) => value.includes(token))) {
+    return 55;
+  }
+
+  return 0;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_:./\\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function symbolToTraceStep(symbol: SymbolNode): FeatureTraceStep {

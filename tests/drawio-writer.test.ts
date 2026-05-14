@@ -16,4 +16,25 @@ describe("renderDrawioXml", () => {
     expect(xml).toContain("source=\"a\"");
     expect(xml).toContain("target=\"b\"");
   });
+
+  it("renders architecture group headers for grouped module diagrams", () => {
+    const xml = renderDrawioXml({
+      title: "Architecture",
+      nodes: [
+        { id: "main.py", label: "main", kind: "entrypoint", group: "entrypoint" },
+        { id: "app/services/user_service.py", label: "user_service", kind: "service", group: "service" },
+        { id: "app/repositories/user_repository.py", label: "user_repository", kind: "repository", group: "repository" }
+      ],
+      edges: [
+        { from: "main.py", to: "app/services/user_service.py" },
+        { from: "app/services/user_service.py", to: "app/repositories/user_repository.py" }
+      ]
+    });
+
+    expect(xml).toContain("Entrypoints");
+    expect(xml).toContain("Service Layer");
+    expect(xml).toContain("Data Access");
+    expect(xml).toContain("fillColor=#ede9fe");
+    expect(xml).toContain("fillColor=#ffedd5");
+  });
 });
