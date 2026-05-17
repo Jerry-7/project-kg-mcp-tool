@@ -37,4 +37,35 @@ describe("renderDrawioXml", () => {
     expect(xml).toContain("fillColor=#ede9fe");
     expect(xml).toContain("fillColor=#ffedd5");
   });
+
+  it("renders feature flow legend and edge styles", () => {
+    const xml = renderDrawioXml({
+      title: "Feature Flow",
+      mode: "feature_flow",
+      nodes: [
+        { id: "a", label: "A", detail: "start", kind: "flow-main", isMainPath: true },
+        { id: "b", label: "B", detail: "next", kind: "flow-main", isMainPath: true }
+      ],
+      edges: [
+        { from: "a", to: "b", label: "1. call", kind: "call", sequence: 1 },
+        { from: "a", to: "b", label: "in: email", kind: "data_in", sequence: 1 },
+        { from: "b", to: "a", label: "out: user", kind: "data_out", sequence: 1 },
+        { from: "b", to: "a", label: "return: user", kind: "return", sequence: 1 }
+      ],
+      legend: [
+        { label: "Call order", kind: "call" },
+        { label: "Data input", kind: "data_in" },
+        { label: "Data output", kind: "data_out" },
+        { label: "Return value", kind: "return" }
+      ]
+    });
+
+    expect(xml).toContain("Legend");
+    expect(xml).toContain("Call order");
+    expect(xml).toContain("Data input");
+    expect(xml).toContain("strokeColor=#2563eb");
+    expect(xml).toContain("strokeColor=#16a34a");
+    expect(xml).toContain("strokeColor=#059669");
+    expect(xml).toContain("fillColor=#ecfdf5");
+  });
 });

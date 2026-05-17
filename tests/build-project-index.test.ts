@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildProjectIndex } from "../src/core/build-project-index.js";
-import { traceFeature } from "../src/core/graph-builder.js";
+import { traceFeature, traceFeatureFlow } from "../src/core/graph-builder.js";
 import { readProjectKgStore } from "../src/core/index-store.js";
 
 const fixturePath = path.resolve("tests/fixtures/simple-python-project");
@@ -50,6 +50,21 @@ describe("buildProjectIndex", () => {
         })
       ])
     );
+    expect(
+      store.callGraph.edges.find((edge) => edge.to === "app/repositories/user_repository.py::UserRepository.find_by_email")
+    ).toEqual(
+      expect.objectContaining({
+        sequence: 1,
+        arguments: ["email"],
+        assignmentTarget: "user",
+        receiver: "self.repository"
+      })
+    );
+    expect(store.symbolIndex.symbols.find((symbol) => symbol.id === "app/services/user_service.py::UserService.login")).toEqual(
+      expect.objectContaining({
+        docstring: "Validate credentials and return login data."
+      })
+    );
 
     const trace = traceFeature(store, "UserService.login");
     expect(trace.matches?.[0]).toEqual(
@@ -72,6 +87,56 @@ describe("buildProjectIndex", () => {
 
     const naturalQueryTrace = traceFeature(store, "user login");
     expect(naturalQueryTrace.rootSymbolId).toBe("app/services/user_service.py::UserService.login");
+
+    const flow = traceFeatureFlow(store, "UserService.login");
+    expect(flow.rootSymbolId).toBe("app/services/user_service.py::UserService.login");
+    expect(flow.options).toEqual(
+      expect.objectContaining({
+        maxDepth: 4,
+        maxNodes: 12,
+        includeBranches: false,
+        includeReturns: true,
+        includeDataFlow: true,
+        detailLevel: "summary"
+      })
+    );
+    expect(flow.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          symbolId: "app/services/user_service.py::UserService.login",
+          annotation: "Validate credentials and return login data.",
+          isMainPath: true
+        }),
+        expect.objectContaining({
+          symbolId: "app/repositories/user_repository.py::UserRepository.find_by_email",
+          annotation: "Load a user record by email.",
+          sequence: 1,
+          isMainPath: true
+        })
+      ])
+    );
+    expect(flow.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          from: "app/services/user_service.py::UserService.login",
+          to: "app/repositories/user_repository.py::UserRepository.find_by_email",
+          kind: "call",
+          sequence: 1,
+          label: "1. find_by_email"
+        }),
+        expect.objectContaining({
+          kind: "data_in",
+          label: "in: email"
+        }),
+        expect.objectContaining({
+          kind: "data_out",
+          label: "out: user"
+        })
+      ])
+    );
+
+    const noDataFlow = traceFeatureFlow(store, "UserService.login", { includeDataFlow: false });
+    expect(noDataFlow.edges.some((edge) => edge.kind === "data_in" || edge.kind === "data_out")).toBe(false);
 
     const noMatchTrace = traceFeature(store, "billing checkout");
     expect(noMatchTrace.rootSymbolId).toBeUndefined();

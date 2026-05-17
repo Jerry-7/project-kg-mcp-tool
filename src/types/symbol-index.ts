@@ -22,6 +22,8 @@ export interface SymbolNode {
   params: SymbolParam[];
   returnType?: string;
   decorators: string[];
+  docstring?: string;
+  leadingComment?: string;
   location: SourceLocation;
 }
 

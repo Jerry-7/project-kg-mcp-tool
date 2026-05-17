@@ -4,6 +4,8 @@ import type { DiagramModel } from "../types/drawio.js";
 
 const nodeWidth = 220;
 const nodeHeight = 72;
+const flowNodeWidth = 260;
+const flowNodeHeight = 108;
 const xGap = 280;
 const yGap = 120;
 const architectureGroups = ["entrypoint", "interface", "service", "domain", "repository", "model", "package", "module"];
@@ -32,6 +34,18 @@ export function renderDrawioXml(model: DiagramModel): string {
   ];
 
   const positions = layoutNodes(model);
+  for (const note of model.notes ?? []) {
+    cells.push(
+      `<mxCell id="note-${cells.length}" value="${escapeXml(note)}" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;darkOpacity=0.05;fillColor=#fff7ed;strokeColor=#f97316;fontColor=#7c2d12;" vertex="1" parent="1">` +
+        `<mxGeometry x="80" y="20" width="360" height="64" as="geometry" />` +
+      `</mxCell>`
+    );
+  }
+
+  if (model.legend?.length) {
+    cells.push(...renderLegendCells(model));
+  }
+
   const groups = groupedNodeIds(model);
   for (const group of groups) {
     const position = positions.get(`group:${group}`);
@@ -51,16 +65,19 @@ export function renderDrawioXml(model: DiagramModel): string {
       y: 80 + Math.floor(index / 3) * yGap
     };
     const value = escapeXml(node.detail ? `${node.label}\n${node.detail}` : node.label);
+    const dimensions = model.mode === "feature_flow"
+      ? { width: flowNodeWidth, height: flowNodeHeight }
+      : { width: nodeWidth, height: nodeHeight };
     cells.push(
       `<mxCell id="${escapeXml(node.id)}" value="${value}" style="${nodeStyle(node.kind)}" vertex="1" parent="1">` +
-        `<mxGeometry x="${position.x}" y="${position.y}" width="${nodeWidth}" height="${nodeHeight}" as="geometry" />` +
+        `<mxGeometry x="${position.x}" y="${position.y}" width="${dimensions.width}" height="${dimensions.height}" as="geometry" />` +
       `</mxCell>`
     );
   });
 
   model.edges.forEach((edge, index) => {
     cells.push(
-      `<mxCell id="edge-${index}" value="${escapeXml(edge.label ?? "")}" style="endArrow=block;html=1;rounded=0;strokeColor=#4b5563;" edge="1" parent="1" source="${escapeXml(edge.from)}" target="${escapeXml(edge.to)}">` +
+      `<mxCell id="edge-${index}" value="${escapeXml(edge.label ?? "")}" style="${edgeStyle(edge.kind)}" edge="1" parent="1" source="${escapeXml(edge.from)}" target="${escapeXml(edge.to)}">` +
         `<mxGeometry relative="1" as="geometry" />` +
       `</mxCell>`
     );
@@ -112,10 +129,22 @@ function nodeStyle(kind?: string): string {
     return "rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontColor=#111827;";
   }
 
+  if (kind === "flow-main") {
+    return "rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfdf5;strokeColor=#059669;fontColor=#111827;fontStyle=1;";
+  }
+
+  if (kind === "flow-branch") {
+    return "rounded=1;whiteSpace=wrap;html=1;fillColor=#f8fafc;strokeColor=#64748b;fontColor=#111827;dashed=1;";
+  }
+
   return "rounded=1;whiteSpace=wrap;html=1;fillColor=#f8fafc;strokeColor=#475569;fontColor=#111827;";
 }
 
 function layoutNodes(model: DiagramModel): Map<string, { x: number; y: number }> {
+  if (model.mode === "feature_flow") {
+    return layoutFeatureFlowNodes(model);
+  }
+
   if (!usesArchitectureGroups(model)) {
     return new Map(
       model.nodes.map((node, index) => [
@@ -151,6 +180,75 @@ function layoutNodes(model: DiagramModel): Map<string, { x: number; y: number }>
   }
 
   return positions;
+}
+
+function layoutFeatureFlowNodes(model: DiagramModel): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  const mainNodes = model.nodes.filter((node) => node.isMainPath !== false);
+  const branchNodes = model.nodes.filter((node) => node.isMainPath === false);
+
+  mainNodes.forEach((node, index) => {
+    positions.set(node.id, { x: 80 + index * 340, y: 180 });
+  });
+
+  branchNodes.forEach((node, index) => {
+    positions.set(node.id, { x: 80 + index * 340, y: 340 });
+  });
+
+  return positions;
+}
+
+function edgeStyle(kind?: string): string {
+  if (kind === "data_in") {
+    return "endArrow=block;html=1;rounded=0;strokeColor=#2563eb;fontColor=#1d4ed8;dashed=1;";
+  }
+
+  if (kind === "data_out") {
+    return "endArrow=block;html=1;rounded=0;strokeColor=#16a34a;fontColor=#15803d;dashed=1;";
+  }
+
+  if (kind === "return") {
+    return "endArrow=block;html=1;rounded=0;strokeColor=#059669;fontColor=#047857;dashed=1;";
+  }
+
+  if (kind === "branch") {
+    return "endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontColor=#475569;dashed=1;";
+  }
+
+  return "endArrow=block;html=1;rounded=0;strokeColor=#374151;fontColor=#111827;";
+}
+
+function renderLegendCells(model: DiagramModel): string[] {
+  const cells: string[] = [];
+  const x = 80;
+  const y = 70;
+  cells.push(
+    `<mxCell id="legend-title" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=1;fontColor=#334155;" vertex="1" parent="1">` +
+      `<mxGeometry x="${x}" y="${y}" width="120" height="24" as="geometry" />` +
+    `</mxCell>`
+  );
+
+  model.legend?.forEach((item, index) => {
+    const rowY = y + 32 + index * 28;
+    const sourceId = `legend-${index}-source`;
+    const targetId = `legend-${index}-target`;
+    cells.push(
+      `<mxCell id="${sourceId}" value="" style="ellipse;html=1;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">` +
+        `<mxGeometry x="${x}" y="${rowY + 7}" width="4" height="4" as="geometry" />` +
+      `</mxCell>`,
+      `<mxCell id="${targetId}" value="" style="ellipse;html=1;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">` +
+        `<mxGeometry x="${x + 58}" y="${rowY + 7}" width="4" height="4" as="geometry" />` +
+      `</mxCell>`,
+      `<mxCell id="legend-edge-${index}" value="" style="${edgeStyle(item.kind)}" edge="1" parent="1" source="${sourceId}" target="${targetId}">` +
+        `<mxGeometry relative="1" as="geometry" />` +
+      `</mxCell>`,
+      `<mxCell id="legend-label-${index}" value="${escapeXml(item.label)}" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#334155;" vertex="1" parent="1">` +
+        `<mxGeometry x="${x + 76}" y="${rowY}" width="180" height="20" as="geometry" />` +
+      `</mxCell>`
+    );
+  });
+
+  return cells;
 }
 
 function groupedNodeIds(model: DiagramModel): string[] {

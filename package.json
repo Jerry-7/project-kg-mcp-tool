@@ -4,10 +4,11 @@
   "description": "MCP tools for indexing Python projects and generating draw.io structure diagrams.",
   "type": "module",
   "bin": {
-    "project-kg": "dist/index.js"
+    "project-kg": "dist/src/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "cli": "tsx src/cli.ts",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "lint": "eslint src tests --ext .ts"

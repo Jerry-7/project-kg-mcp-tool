@@ -1,5 +1,14 @@
 import path from "node:path";
-import type { FeatureTrace, FeatureTraceMatch, FeatureTraceStep } from "../types/call-graph.js";
+import type {
+  CallEdge,
+  FeatureFlow,
+  FeatureFlowEdge,
+  FeatureFlowOptions,
+  FeatureFlowStep,
+  FeatureTrace,
+  FeatureTraceMatch,
+  FeatureTraceStep
+} from "../types/call-graph.js";
 import type { DependencyGraph } from "../types/dependency-graph.js";
 import type { DiagramModel } from "../types/drawio.js";
 import type { ProjectIndex } from "../types/project-index.js";
@@ -20,6 +29,15 @@ const corePathHints = [
   "models",
   "schemas"
 ];
+
+const defaultFeatureFlowOptions: Required<FeatureFlowOptions> = {
+  maxDepth: 4,
+  maxNodes: 12,
+  includeBranches: false,
+  includeReturns: true,
+  includeDataFlow: true,
+  detailLevel: "summary"
+};
 
 export function buildCoreModulesDiagram(store: ProjectKgStore): DiagramModel {
   const coreFiles = selectCoreFiles(store.projectIndex, store.dependencyGraph);
@@ -42,6 +60,7 @@ export function buildCoreModulesDiagram(store: ProjectKgStore): DiagramModel {
 
   return {
     title: "Core Python Module Dependencies",
+    mode: "core_modules",
     nodes,
     edges
   };
@@ -131,9 +150,93 @@ export function traceFeature(store: ProjectKgStore, query: string, maxDepth = 4)
   };
 }
 
+export function traceFeatureFlow(store: ProjectKgStore, query: string, options: FeatureFlowOptions = {}): FeatureFlow {
+  const resolvedOptions = {
+    ...defaultFeatureFlowOptions,
+    ...options
+  };
+  const matches = findRootSymbolMatches(store.symbolIndex, query);
+  const root = matches[0] ? store.symbolIndex.symbols.find((symbol) => symbol.id === matches[0].symbolId) : undefined;
+  if (!root) {
+    return {
+      query,
+      matches,
+      options: resolvedOptions,
+      steps: [],
+      edges: [],
+      truncated: false
+    };
+  }
+
+  const symbolMap = new Map(store.symbolIndex.symbols.map((symbol) => [symbol.id, symbol]));
+  const steps: FeatureFlowStep[] = [];
+  const edges: FeatureFlowEdge[] = [];
+  const visited = new Set<string>();
+  let truncated = false;
+
+  function visit(symbol: SymbolNode, depth: number, isMainPath: boolean, incomingSequence?: number): void {
+    if (depth > resolvedOptions.maxDepth || visited.has(symbol.id)) {
+      return;
+    }
+
+    if (steps.length >= resolvedOptions.maxNodes) {
+      truncated = true;
+      return;
+    }
+
+    visited.add(symbol.id);
+    steps.push(symbolToFlowStep(symbol, resolvedOptions.detailLevel, isMainPath, incomingSequence));
+
+    const outgoing = orderedOutgoingCalls(store.callGraph.edges, symbol.id, symbolMap);
+    const selectedOutgoing = resolvedOptions.includeBranches ? outgoing : outgoing.slice(0, 1);
+    for (const [index, edge] of selectedOutgoing.entries()) {
+      if (!edge.to) {
+        continue;
+      }
+
+      const target = symbolMap.get(edge.to);
+      if (!target) {
+        continue;
+      }
+
+      const edgeSequence = edge.sequence ?? index + 1;
+      const isBranch = index > 0;
+      edges.push(callEdgeToFlowEdge(edge, isBranch));
+      if (resolvedOptions.includeDataFlow) {
+        edges.push(...dataFlowEdgesForCall(edge));
+      }
+      if (resolvedOptions.includeReturns) {
+        const returnEdge = returnFlowEdgeForCall(edge);
+        if (returnEdge) {
+          edges.push(returnEdge);
+        }
+      }
+
+      visit(target, depth + 1, isMainPath && !isBranch, edgeSequence);
+    }
+
+    if (!resolvedOptions.includeBranches && outgoing.length > selectedOutgoing.length) {
+      truncated = true;
+    }
+  }
+
+  visit(root, 0, true);
+
+  return {
+    query,
+    rootSymbolId: root.id,
+    matches,
+    options: resolvedOptions,
+    steps,
+    edges,
+    truncated
+  };
+}
+
 export function buildFeatureTraceDiagram(trace: FeatureTrace): DiagramModel {
   return {
     title: `Feature Trace: ${trace.query}`,
+    mode: "feature_trace",
     nodes: trace.steps.map((step) => ({
       id: step.symbolId,
       label: step.label,
@@ -141,6 +244,37 @@ export function buildFeatureTraceDiagram(trace: FeatureTrace): DiagramModel {
       kind: "symbol"
     })),
     edges: trace.edges
+  };
+}
+
+export function buildFeatureFlowDiagram(flow: FeatureFlow): DiagramModel {
+  return {
+    title: `Feature Flow: ${flow.query}`,
+    mode: "feature_flow",
+    nodes: flow.steps.map((step) => ({
+      id: step.symbolId,
+      label: step.label,
+      detail: step.detail,
+      kind: step.isMainPath ? "flow-main" : "flow-branch",
+      sequence: step.sequence,
+      isMainPath: step.isMainPath
+    })),
+    edges: flow.edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      label: edge.label,
+      kind: edge.kind,
+      sequence: edge.sequence,
+      detail: edge.detail
+    })),
+    legend: [
+      { label: "Call order", kind: "call" },
+      { label: "Branch/helper call", kind: "branch" },
+      { label: "Data input", kind: "data_in" },
+      { label: "Data output", kind: "data_out" },
+      { label: "Return value", kind: "return" }
+    ],
+    notes: flow.truncated ? ["Trace was bounded by maxDepth, maxNodes, or branch filtering."] : undefined
   };
 }
 
@@ -253,6 +387,105 @@ function normalizeSearchText(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function orderedOutgoingCalls(edges: CallEdge[], symbolId: string, symbolMap: Map<string, SymbolNode>): CallEdge[] {
+  return edges
+    .filter((edge) => edge.from === symbolId && edge.to && symbolMap.has(edge.to))
+    .sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER) || a.location.startLine - b.location.startLine)
+    .slice(0, 8);
+}
+
+function callEdgeToFlowEdge(edge: CallEdge, isBranch: boolean): FeatureFlowEdge {
+  return {
+    from: edge.from,
+    to: edge.to!,
+    label: `${edge.sequence ? `${edge.sequence}. ` : ""}${edge.calleeName}`,
+    kind: isBranch ? "branch" : "call",
+    sequence: edge.sequence,
+    detail: callEdgeDetail(edge)
+  };
+}
+
+function dataFlowEdgesForCall(edge: CallEdge): FeatureFlowEdge[] {
+  const flowEdges: FeatureFlowEdge[] = [];
+  if (edge.arguments?.length) {
+    flowEdges.push({
+      from: edge.from,
+      to: edge.to!,
+      label: `in: ${edge.arguments.join(", ")}`,
+      kind: "data_in",
+      sequence: edge.sequence,
+      detail: edge.expression
+    });
+  }
+
+  if (edge.assignmentTarget) {
+    flowEdges.push({
+      from: edge.to!,
+      to: edge.from,
+      label: `out: ${edge.assignmentTarget}`,
+      kind: "data_out",
+      sequence: edge.sequence,
+      detail: edge.expression
+    });
+  }
+
+  return flowEdges;
+}
+
+function returnFlowEdgeForCall(edge: CallEdge): FeatureFlowEdge | undefined {
+  if (!edge.returnExpression) {
+    return undefined;
+  }
+
+  return {
+    from: edge.to!,
+    to: edge.from,
+    label: `return: ${summarizeText(edge.returnExpression, 48)}`,
+    kind: "return",
+    sequence: edge.sequence,
+    detail: edge.returnExpression
+  };
+}
+
+function callEdgeDetail(edge: CallEdge): string {
+  const parts = [
+    edge.receiver ? `receiver: ${edge.receiver}` : undefined,
+    edge.arguments?.length ? `args: ${edge.arguments.join(", ")}` : undefined,
+    edge.assignmentTarget ? `assigns: ${edge.assignmentTarget}` : undefined,
+    `${edge.filePath}:${edge.location.startLine}`
+  ];
+  return parts.filter(Boolean).join("\n");
+}
+
+function symbolToFlowStep(
+  symbol: SymbolNode,
+  detailLevel: "summary" | "full",
+  isMainPath: boolean,
+  sequence?: number
+): FeatureFlowStep {
+  const traceStep = symbolToTraceStep(symbol);
+  const annotation = symbol.docstring ?? symbol.leadingComment ?? `${symbol.kind} ${symbol.qualifiedName}`;
+  const detailParts = detailLevel === "full"
+    ? [traceStep.detail, symbol.docstring, symbol.leadingComment].filter(Boolean)
+    : [traceStep.detail, annotation].filter(Boolean);
+
+  return {
+    symbolId: symbol.id,
+    label: symbol.qualifiedName,
+    annotation,
+    detail: detailParts.join("\n"),
+    filePath: symbol.filePath,
+    location: symbol.location,
+    sequence,
+    isMainPath
+  };
+}
+
+function summarizeText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 }
 
 function symbolToTraceStep(symbol: SymbolNode): FeatureTraceStep {

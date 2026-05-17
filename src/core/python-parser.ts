@@ -17,6 +17,11 @@ export interface PythonCallInfo {
   calleePath: string[];
   expression: string;
   location: SourceLocation;
+  sequence?: number;
+  arguments: string[];
+  assignmentTarget?: string;
+  returnExpression?: string;
+  receiver?: string;
 }
 
 export interface PythonAssignmentInfo {
@@ -46,6 +51,7 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
   const symbols: SymbolNode[] = [];
   const calls: PythonCallInfo[] = [];
   const assignments: PythonAssignmentInfo[] = [];
+  const callSequencesBySymbol = new Map<string, number>();
 
   visit(tree.rootNode, [], undefined);
 
@@ -62,7 +68,7 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
     if (node.type === "class_definition") {
       const className = childText(node, "name", source);
       if (className) {
-        const symbol = createSymbol(node, source, relativePath, "class", className, classStack);
+        const symbol = createSymbol(node, source, relativePath, "class", className, classStack, source);
         symbols.push(symbol);
         for (const child of node.namedChildren) {
           visit(child, [...classStack, className], symbol.id);
@@ -75,7 +81,7 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
       const functionName = childText(node, "name", source);
       if (functionName) {
         const kind = classStack.length > 0 ? "method" : "function";
-        const symbol = createSymbol(node, source, relativePath, kind, functionName, classStack);
+        const symbol = createSymbol(node, source, relativePath, kind, functionName, classStack, source);
         symbols.push(symbol);
         for (const child of node.namedChildren) {
           visit(child, classStack, symbol.id);
@@ -96,13 +102,19 @@ export async function parsePythonFile(absolutePath: string, relativePath: string
       const calleePath = functionNode ? splitDottedName(functionNode.text) : [];
       const calleeName = calleePath.at(-1);
       if (calleeName) {
+        const sequence = enclosingSymbolId ? nextCallSequence(callSequencesBySymbol, enclosingSymbolId) : undefined;
         calls.push({
           filePath: relativePath,
           enclosingSymbolId,
           calleeName,
           calleePath,
           expression: node.text,
-          location: toLocation(node)
+          location: toLocation(node),
+          sequence,
+          arguments: parseCallArguments(node),
+          assignmentTarget: assignmentTargetForCall(node),
+          returnExpression: returnExpressionForCall(node),
+          receiver: calleePath.length > 1 ? calleePath.slice(0, -1).join(".") : undefined
         });
       }
     }
@@ -185,7 +197,8 @@ function createSymbol(
   filePath: string,
   kind: SymbolNode["kind"],
   name: string,
-  classStack: string[]
+  classStack: string[],
+  fullSource: string
 ): SymbolNode {
   const qualifiedName = [...classStack, name].join(".");
   return {
@@ -197,6 +210,8 @@ function createSymbol(
     params: kind === "class" ? [] : parseParams(node, source),
     returnType: kind === "class" ? undefined : parseReturnType(node, source),
     decorators: parseDecorators(node),
+    docstring: parseDocstring(node),
+    leadingComment: parseLeadingComment(node, fullSource),
     location: toLocation(node)
   };
 }
@@ -241,6 +256,99 @@ function parseDecorators(node: Parser.SyntaxNode): string[] {
   return parent.namedChildren
     .filter((child) => child.type === "decorator")
     .map((child) => child.text.replace(/^@/, "").trim());
+}
+
+function parseDocstring(node: Parser.SyntaxNode): string | undefined {
+  const body = node.childForFieldName("body");
+  const firstStatement = body?.namedChildren[0];
+  const expression = firstStatement?.type === "expression_statement" ? firstStatement.namedChildren[0] : undefined;
+  if (!expression || expression.type !== "string") {
+    return undefined;
+  }
+
+  return cleanPythonStringLiteral(expression.text);
+}
+
+function parseLeadingComment(node: Parser.SyntaxNode, source: string): string | undefined {
+  const lines = source.split(/\r?\n/);
+  const comments: string[] = [];
+
+  for (let lineIndex = node.startPosition.row - 1; lineIndex >= 0; lineIndex -= 1) {
+    const line = lines[lineIndex]?.trim();
+    if (!line) {
+      if (comments.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    if (!line.startsWith("#")) {
+      break;
+    }
+
+    comments.unshift(line.replace(/^#+\s?/, "").trim());
+  }
+
+  return comments.length > 0 ? comments.join("\n") : undefined;
+}
+
+function cleanPythonStringLiteral(value: string): string {
+  const trimmed = value.trim();
+  const quoteMatch = trimmed.match(/^(?<prefix>[rRuUbBfF]*)?(?<quote>"""|'''|"|')(?<body>[\s\S]*)(\k<quote>)$/);
+  const body = quoteMatch?.groups?.body ?? trimmed;
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .join("\n")
+    .trim();
+}
+
+function parseCallArguments(node: Parser.SyntaxNode): string[] {
+  const argumentsNode = node.childForFieldName("arguments");
+  if (!argumentsNode) {
+    return [];
+  }
+
+  return argumentsNode.namedChildren.map((child) => child.text.trim()).filter(Boolean);
+}
+
+function assignmentTargetForCall(node: Parser.SyntaxNode): string | undefined {
+  const parent = node.parent;
+  const rightNode = parent?.childForFieldName("right");
+  if (parent?.type !== "assignment" || !rightNode || !sameNodeRange(rightNode, node)) {
+    return undefined;
+  }
+
+  return parent.childForFieldName("left")?.text;
+}
+
+function returnExpressionForCall(node: Parser.SyntaxNode): string | undefined {
+  const returnNode = nearestParentOfType(node, "return_statement");
+  return returnNode?.text.replace(/^return\s+/, "").trim();
+}
+
+function nearestParentOfType(node: Parser.SyntaxNode, type: string): Parser.SyntaxNode | undefined {
+  let current = node.parent;
+  while (current) {
+    if (current.type === type) {
+      return current;
+    }
+    if (current.type === "function_definition" || current.type === "class_definition") {
+      return undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function nextCallSequence(sequences: Map<string, number>, symbolId: string): number {
+  const next = (sequences.get(symbolId) ?? 0) + 1;
+  sequences.set(symbolId, next);
+  return next;
+}
+
+function sameNodeRange(left: Parser.SyntaxNode, right: Parser.SyntaxNode): boolean {
+  return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
 }
 
 function childText(node: Parser.SyntaxNode, fieldName: string, source: string): string | undefined {

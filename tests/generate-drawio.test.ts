@@ -21,6 +21,7 @@ describe("generateDrawioTool", () => {
     const result = await generateDrawioTool({
       projectPath,
       mode: "core_modules",
+      format: "drawio",
       outputPath
     });
 
@@ -53,6 +54,7 @@ describe("generateDrawioTool", () => {
     const result = await generateDrawioTool({
       projectPath,
       mode: "feature_trace",
+      format: "drawio",
       query: "UserService.login",
       outputPath
     });
@@ -66,6 +68,107 @@ describe("generateDrawioTool", () => {
     expect(xml).toContain("UserService.login");
     expect(xml).toContain("UserRepository.find_by_email");
     expect(xml).toContain("find_by_email");
+  });
+
+  it("writes an annotated feature flow drawio file", async () => {
+    const projectPath = await copyFixtureToTempProject();
+    await buildProjectIndex({ projectPath });
+
+    const outputPath = path.join(projectPath, "diagrams", "login-feature-flow.drawio");
+    const result = await generateDrawioTool({
+      projectPath,
+      mode: "feature_flow",
+      format: "drawio",
+      query: "UserService.login",
+      maxDepth: 3,
+      maxNodes: 8,
+      includeDataFlow: true,
+      outputPath
+    });
+
+    const xml = await readFile(outputPath, "utf8");
+
+    expect(result.nodeCount).toBeGreaterThan(1);
+    expect(result.edgeCount).toBeGreaterThan(1);
+    await expect(stat(outputPath)).resolves.toBeTruthy();
+    expect(xml).toContain("Feature Flow: UserService.login");
+    expect(xml).toContain("Legend");
+    expect(xml).toContain("Validate credentials and return login data.");
+    expect(xml).toContain("Load a user record by email.");
+    expect(xml).toContain("1. find_by_email");
+    expect(xml).toContain("in: email");
+    expect(xml).toContain("out: user");
+    expect(xml).toContain("strokeColor=#2563eb");
+    expect(xml).toContain("strokeColor=#16a34a");
+  });
+
+  it("writes a core modules mermaid file", async () => {
+    const projectPath = await copyFixtureToTempProject();
+    await buildProjectIndex({ projectPath });
+
+    const outputPath = path.join(projectPath, "diagrams", "core.md");
+    const result = await generateDrawioTool({
+      projectPath,
+      mode: "core_modules",
+      format: "mermaid",
+      outputPath
+    });
+
+    const content = await readFile(outputPath, "utf8");
+
+    expect(result.format).toBe("mermaid");
+    expect(result.content).toBeTruthy();
+    expect(content).toContain("```mermaid");
+    expect(content).toContain("flowchart LR");
+    expect(content).toContain("Entrypoints");
+    expect(content).toContain("Service Layer");
+    expect(content).toContain("Data Access");
+    expect(content).toContain("main");
+    expect(content).toContain("user_service");
+  });
+
+  it("writes a feature flow mermaid file with inline content", async () => {
+    const projectPath = await copyFixtureToTempProject();
+    await buildProjectIndex({ projectPath });
+
+    const outputPath = path.join(projectPath, "diagrams", "login-flow.md");
+    const result = await generateDrawioTool({
+      projectPath,
+      mode: "feature_flow",
+      format: "mermaid",
+      query: "UserService.login",
+      maxDepth: 3,
+      maxNodes: 8,
+      includeDataFlow: true,
+      outputPath
+    });
+
+    const content = await readFile(outputPath, "utf8");
+
+    expect(result.format).toBe("mermaid");
+    expect(result.content).toContain("```mermaid");
+    expect(result.content).toContain("UserService.login");
+    expect(result.content).toContain("find_by_email");
+    expect(content).toContain("flowchart LR");
+    expect(content).toContain("classDef branch");
+    expect(result.nodeCount).toBeGreaterThan(1);
+  });
+
+  it("defaults to mermaid format when no format is specified", async () => {
+    const projectPath = await copyFixtureToTempProject();
+    await buildProjectIndex({ projectPath });
+
+    const result = await generateDrawioTool({
+      projectPath,
+      mode: "feature_flow",
+      query: "UserService.login",
+      maxDepth: 3,
+      maxNodes: 8
+    });
+
+    expect(result.format).toBe("mermaid");
+    expect(result.content).toContain("```mermaid");
+    expect(result.content).toContain("flowchart LR");
   });
 });
 

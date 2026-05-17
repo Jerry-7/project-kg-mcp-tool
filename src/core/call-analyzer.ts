@@ -40,6 +40,11 @@ export function buildCallGraph(parsedFiles: ParsedPythonFile[], symbolIndex: Sym
         calleeName: call.calleeName,
         filePath: call.filePath,
         location: call.location,
+        sequence: call.sequence,
+        arguments: call.arguments,
+        assignmentTarget: call.assignmentTarget,
+        returnExpression: call.returnExpression,
+        receiver: call.receiver,
         confidence: target ? (resolvedTypedCall ? "high" : sameFileCandidate ? "medium" : "low") : "low"
       });
     }

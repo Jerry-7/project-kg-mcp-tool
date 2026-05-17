@@ -9,6 +9,26 @@ describe("parsePythonFile", () => {
 
     expect(parsed.imports[0]?.module).toBe("app.repositories.user_repository");
     expect(parsed.symbols.map((symbol) => symbol.qualifiedName)).toContain("UserService.login");
-    expect(parsed.calls.some((call) => call.calleeName === "find_by_email")).toBe(true);
+
+    expect(parsed.symbols.find((symbol) => symbol.qualifiedName === "UserService")).toEqual(
+      expect.objectContaining({
+        docstring: "Application service for user login.",
+        leadingComment: "Coordinates user authentication."
+      })
+    );
+    expect(parsed.symbols.find((symbol) => symbol.qualifiedName === "UserService.login")).toEqual(
+      expect.objectContaining({
+        docstring: "Validate credentials and return login data."
+      })
+    );
+
+    expect(parsed.calls.find((call) => call.calleeName === "find_by_email")).toEqual(
+      expect.objectContaining({
+        sequence: 1,
+        arguments: ["email"],
+        assignmentTarget: "user",
+        receiver: "self.repository"
+      })
+    );
   });
 });

@@ -62,15 +62,21 @@ const toolDefinitions = [
   },
   {
     name: "generate_drawio",
-    description: "Generate a draw.io file for core_modules or feature_trace mode.",
+    description: "Generate a Mermaid markdown or draw.io file for core_modules, feature_trace, or feature_flow mode. Prefer format: 'mermaid' for agent-response inline rendering; use 'drawio' when the user needs to edit the diagram manually.",
     inputSchema: {
       type: "object",
       properties: {
         projectPath: { type: "string" },
-        mode: { type: "string", enum: ["core_modules", "feature_trace"] },
+        mode: { type: "string", enum: ["core_modules", "feature_trace", "feature_flow"] },
         outputPath: { type: "string" },
+        format: { type: "string", enum: ["mermaid", "drawio"] },
         query: { type: "string" },
-        maxDepth: { type: "number" }
+        maxDepth: { type: "number" },
+        maxNodes: { type: "number" },
+        includeBranches: { type: "boolean" },
+        includeReturns: { type: "boolean" },
+        includeDataFlow: { type: "boolean" },
+        detailLevel: { type: "string", enum: ["summary", "full"] }
       },
       required: ["projectPath", "mode"]
     }
